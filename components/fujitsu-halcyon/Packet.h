@@ -2,12 +2,16 @@
 
 #include <array>
 #include <bit>
+#include <bitset>
+#include <concepts>
 #include <cstdint>
+#include <limits>
 
 namespace fujitsu_general::airstage::h {
 
 constexpr uint8_t PrimaryAddress = 0;
 constexpr uint8_t MaxAddress = 15;
+constexpr uint8_t MaxZone = 8; // Excludes Common/Constant Zone
 
 enum class AddressTypeEnum : uint8_t {
     IndoorUnit,
@@ -19,7 +23,9 @@ enum class PacketTypeEnum : uint8_t {
     Error,
     Features,
     Function,
-    Status
+    Status,
+    ZoneConfig,
+    ZoneFunction
 };
 
 enum class FanSpeedEnum : uint8_t {
@@ -108,6 +114,7 @@ struct Features {
     bool EconomyMode;
     bool HorizontalLouvers;
     bool VerticalLouvers;
+    bool Zones;
 };
 
 struct Function {
@@ -121,6 +128,38 @@ struct Function {
 };
 
 struct Status {};
+
+struct ZoneConfig {
+    struct {
+        bool Write;
+    } Controller;
+
+    std::bitset<MaxZone> ActiveZones;
+
+    struct {
+        bool Day;
+        bool Night;
+    } ActiveZoneGroups;
+
+    struct {
+        std::bitset<MaxZone> Day;
+        std::bitset<MaxZone> Night;
+    } ZoneGroupAssociations;
+};
+
+struct ZoneFunction {
+    struct Zones {
+        bool ZoneCommon;
+        std::bitset<MaxZone> EnabledZones;
+    } IndoorUnit;
+
+    struct {
+        bool Write;
+    } Controller;
+
+    uint8_t Function;
+    uint8_t Value;
+};
 
 struct ByteMaskShiftData {
     constexpr ByteMaskShiftData(uint8_t byte, uint8_t mask) : byte(byte), mask(mask), shift(std::countr_zero(mask)) {};
@@ -208,6 +247,7 @@ constexpr struct BMS {
         constexpr static auto EconomyMode               = ByteMaskShiftData(5, 0b00000100);
         constexpr static auto HorizontalLouvers         = ByteMaskShiftData(5, 0b00000010);
         constexpr static auto VerticalLouvers           = ByteMaskShiftData(5, 0b00000001);
+        constexpr static auto Zones                     = ByteMaskShiftData(6, 0b00010000);
     } Features {};
 
     constexpr static struct Function_ {
@@ -221,6 +261,36 @@ constexpr struct BMS {
     } Function {};
 
     constexpr static struct Status_ {} Status {};
+
+    constexpr static struct ZoneConfig_ {
+        constexpr static struct Controller_ {
+            constexpr static auto Write                 = ByteMaskShiftData(2, 0b00001000);
+        } Controller {};
+
+        constexpr static auto ActiveZones               = ByteMaskShiftData(3, 0b11111111);
+
+        constexpr static struct ActiveZoneGroups_ {
+            constexpr static auto Day                   = ByteMaskShiftData(4, 0b00001000);
+            constexpr static auto Night                 = ByteMaskShiftData(4, 0b00010000);
+        } ActiveZoneGroups {};
+
+        constexpr static auto ZoneGroupAssociations1_4  = ByteMaskShiftData(5, 0b11111111);
+        constexpr static auto ZoneGroupAssociations5_8  = ByteMaskShiftData(6, 0b11111111);
+    } ZoneConfig {};
+
+    constexpr static struct ZoneFunction_ {
+        constexpr static struct IndoorUnit_ {
+            constexpr static auto ZoneCommon            = ByteMaskShiftData(2, 0b00001000);
+            constexpr static auto EnabledZones          = ByteMaskShiftData(3, 0b11111111);
+        } IndoorUnit = {};
+
+        constexpr static struct Controller_ {
+            constexpr static auto Write                 = ByteMaskShiftData(5, 0b10000000);
+        } Controller {};
+
+        constexpr static auto Function                  = ByteMaskShiftData(6, 0b11111111);
+        constexpr static auto Value                     = ByteMaskShiftData(7, 0b11111111);
+    } ZoneFunction {};
 } BMS;
 static_assert(BMS.Type.shift == 4 && BMS.Features.FanSpeed.Low.shift == 3, "Shift values calculated incorrectly");
 
@@ -246,8 +316,30 @@ class Packet {
         struct Function Function {};
         struct Features Features {};
         struct Status Status {};
+        struct ZoneConfig ZoneConfig {};
+        struct ZoneFunction ZoneFunction {};
 
         static void invert_buffer(Buffer& buffer) { *reinterpret_cast<uint64_t*>(buffer.data()) = ~*reinterpret_cast<uint64_t*>(buffer.data()); };
+
+    private:
+        // std::bit_compress/std::bit_expand have been proposed for c++ STL (P3104), but are not available now so use these instead
+        template<std::unsigned_integral T>
+        [[nodiscard]] constexpr static T extract_bits(const T input, const bool odd) noexcept {
+            T output = 0;
+            for (size_t i = 0, j = 0; i < std::numeric_limits<T>::digits; i++)
+                if (i % 2 == odd)
+                    output |= (input >> i & 1) << j++;
+            return output;
+        };
+
+        template<std::unsigned_integral T>
+        [[nodiscard]] constexpr static T interleave_bits(const T input, const bool odd) noexcept {
+            T output = 0;
+            for (size_t i = 0, j = 0; i < std::numeric_limits<T>::digits; i++)
+                if (i % 2 == odd)
+                    output |= (input >> j++ & 1) << i;
+            return output;
+        };
 };
 
 }

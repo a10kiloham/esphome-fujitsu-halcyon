@@ -102,6 +102,8 @@ By default, the controller probes the indoor unit with a `FeatureRequest` packet
 
 When negotiation does not yield a `Features` packet, you can override the in-code defaults from YAML to match your specific indoor unit. Anything not specified keeps the in-code `DefaultFeatures` value.
 
+The Zone feature currently requires autoconf to remain enabled.
+
 ```yaml
 climate:
   - platform: fujitsu-halcyon
@@ -149,7 +151,7 @@ The following entities are created automatically in Home Assistant. Feature-depe
 | Error | Binary sensor | Enabled | Indicates an active fault on the indoor unit |
 | Error Code | Text sensor | Enabled | Fault code in `AA BB.CCC` (unit address + error code + extended error code) |
 | Initialization Stage | Text sensor | Enabled | Current initialization progress, (5/5) indicates complete |
-| Supported Features | Text sensor | Enabled | List of features reported by the indoor unit, published once at initialization. Example: `Mode: Auto Heat Cool Dry Fan \| Fan: Auto High Medium Low Quiet \| Economy \| Sensor Switching \| V.Louvers \| H.Louvers` |
+| Supported Features | Text sensor | Enabled | List of features reported by the indoor unit, published once at initialization. Example: `Mode: Auto Heat Cool Dry Fan \| Fan: Auto High Medium Low Quiet \| Economy \| Sensor Switching \| V.Louvers \| H.Louvers \| Zones |`
 | Remote Temperature Sensor | Sensor | Disabled | Temperature reported by another controller on the bus (see `temperature_controller_address`) |
 | Filter Timer Expired | Binary sensor | Feature-dependent | Set when the filter maintenance timer has elapsed |
 
@@ -163,6 +165,9 @@ The following entities are created automatically in Home Assistant. Feature-depe
 | Reinitialize | Button | Enabled | Re-run the initialization sequence without rebooting |
 | Function / Function Value / Function Unit | Number | Enabled | Raw function register access |
 | Function_Read / Function_Write | Button | Enabled / Disabled | Trigger a function register read or write |
+| Zone `#` | Switch | Feature-dependent | Enable/Disable zone `#` |
+| Zone Group Day | Switch | Feature-dependent | Enable/Disable zone group Day |
+| Zone Group Night | Switch | Feature-dependent | Enable/Disable zone group Night |
 
 ## Troubleshooting
 

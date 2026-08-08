@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 
 #include <esphome/core/component.h>
@@ -41,6 +42,18 @@ class FujitsuHalcyonController : public Component, public climate::Climate, publ
         custom::CustomButton* advance_vertical_louver_button = new custom::CustomButton([this]() { this->controller->advance_vertical_louver(this->ignore_lock_); });
         custom::CustomButton* advance_horizontal_louver_button = new custom::CustomButton([this]() { this->controller->advance_horizontal_louver(this->ignore_lock_); });
         custom::CustomSwitch* use_sensor_switch = new custom::CustomSwitch([this](bool state) { return this->controller->use_sensor(state, this->ignore_lock_); });
+
+        std::array<custom::CustomSwitch*, fujitsu_general::airstage::h::MaxZone> zone_switches = [this] {
+            std::array<custom::CustomSwitch*, fujitsu_general::airstage::h::MaxZone> switches;
+
+            for (auto i = 0; i < switches.size(); i++)
+                switches[i] = new custom::CustomSwitch([this, i](bool state) { return this->controller->set_zone(i, state, this->ignore_lock_); });
+
+            return switches;
+        }();
+
+        custom::CustomSwitch* zone_group_day_switch = new custom::CustomSwitch([this](bool state) { return this->controller->set_zone_group_day(state, this->ignore_lock_); });
+        custom::CustomSwitch* zone_group_night_switch = new custom::CustomSwitch([this](bool state) { return this->controller->set_zone_group_night(state, this->ignore_lock_); });
 
         custom::CustomNumber* function = new custom::CustomNumber([this](float state) { return int(state); });
         custom::CustomNumber* function_value = new custom::CustomNumber([this](float state) { return int(state); });
@@ -115,6 +128,7 @@ class FujitsuHalcyonController : public Component, public climate::Climate, publ
         fujitsu_general::airstage::h::Controller* controller;
 
         void update_from_device(const fujitsu_general::airstage::h::Config& data);
+        void update_from_device(const fujitsu_general::airstage::h::ZoneConfig& data);
         void update_from_device(const fujitsu_general::airstage::h::Packet& data);
         void update_from_device(const fujitsu_general::airstage::h::Function& data);
         void update_from_controller(const uint8_t address, const fujitsu_general::airstage::h::Config& data);

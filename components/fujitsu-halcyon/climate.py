@@ -89,6 +89,17 @@ CONF_REINITIALIZE = "reinitialize"
 CONF_CONNECTED = "connected"
 CONF_SUPPORTED_FEATURES = "supported_features"
 
+CONF_ZONE_1 = "zone_1"
+CONF_ZONE_2 = "zone_2"
+CONF_ZONE_3 = "zone_3"
+CONF_ZONE_4 = "zone_4"
+CONF_ZONE_5 = "zone_5"
+CONF_ZONE_6 = "zone_6"
+CONF_ZONE_7 = "zone_7"
+CONF_ZONE_8 = "zone_8"
+CONF_ZONE_GROUP_DAY = "zone_group_day"
+CONF_ZONE_GROUP_NIGHT = "zone_group_night"
+
 CONF_FUNCTION = "function"
 CONF_FUNCTION_VALUE = "function_value"
 CONF_FUNCTION_UNIT = "function_unit"
@@ -202,6 +213,56 @@ CONFIG_SCHEMA = climate.climate_schema(FujitsuHalcyonController).extend(
         cv.Optional(CONF_SUPPORTED_FEATURES, default={CONF_NAME: "Supported Features"}): text_sensor.text_sensor_schema(
             TextSensor,
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC
+        ),
+        cv.Optional(CONF_ZONE_1, default={CONF_NAME: "Zone 1", CONF_INTERNAL: True}): switch.switch_schema(
+            CustomSwitch,
+            entity_category=ENTITY_CATEGORY_CONFIG,
+            default_restore_mode="RESTORE_DEFAULT_ON"
+        ),
+        cv.Optional(CONF_ZONE_2, default={CONF_NAME: "Zone 2", CONF_INTERNAL: True}): switch.switch_schema(
+            CustomSwitch,
+            entity_category=ENTITY_CATEGORY_CONFIG,
+            default_restore_mode="RESTORE_DEFAULT_ON"
+        ),
+        cv.Optional(CONF_ZONE_3, default={CONF_NAME: "Zone 3", CONF_INTERNAL: True}): switch.switch_schema(
+            CustomSwitch,
+            entity_category=ENTITY_CATEGORY_CONFIG,
+            default_restore_mode="RESTORE_DEFAULT_ON"
+        ),
+        cv.Optional(CONF_ZONE_4, default={CONF_NAME: "Zone 4", CONF_INTERNAL: True}): switch.switch_schema(
+            CustomSwitch,
+            entity_category=ENTITY_CATEGORY_CONFIG,
+            default_restore_mode="RESTORE_DEFAULT_ON"
+        ),
+        cv.Optional(CONF_ZONE_5, default={CONF_NAME: "Zone 5", CONF_INTERNAL: True}): switch.switch_schema(
+            CustomSwitch,
+            entity_category=ENTITY_CATEGORY_CONFIG,
+            default_restore_mode="RESTORE_DEFAULT_ON"
+        ),
+        cv.Optional(CONF_ZONE_6, default={CONF_NAME: "Zone 6", CONF_INTERNAL: True}): switch.switch_schema(
+            CustomSwitch,
+            entity_category=ENTITY_CATEGORY_CONFIG,
+            default_restore_mode="RESTORE_DEFAULT_ON"
+        ),
+        cv.Optional(CONF_ZONE_7, default={CONF_NAME: "Zone 7", CONF_INTERNAL: True}): switch.switch_schema(
+            CustomSwitch,
+            entity_category=ENTITY_CATEGORY_CONFIG,
+            default_restore_mode="RESTORE_DEFAULT_ON"
+        ),
+        cv.Optional(CONF_ZONE_8, default={CONF_NAME: "Zone 8", CONF_INTERNAL: True}): switch.switch_schema(
+            CustomSwitch,
+            entity_category=ENTITY_CATEGORY_CONFIG,
+            default_restore_mode="RESTORE_DEFAULT_ON"
+        ),
+        cv.Optional(CONF_ZONE_GROUP_DAY, default={CONF_NAME: "Zone Group Day", CONF_INTERNAL: True}): switch.switch_schema(
+            CustomSwitch,
+            entity_category=ENTITY_CATEGORY_CONFIG,
+            default_restore_mode="RESTORE_DEFAULT_ON"
+        ),
+        cv.Optional(CONF_ZONE_GROUP_NIGHT, default={CONF_NAME: "Zone Group Night", CONF_INTERNAL: True}): switch.switch_schema(
+            CustomSwitch,
+            entity_category=ENTITY_CATEGORY_CONFIG,
+            default_restore_mode="RESTORE_DEFAULT_ON"
         ),
     }
 ).extend(cv.COMPONENT_SCHEMA).extend(uart.UART_DEVICE_SCHEMA)
@@ -373,6 +434,36 @@ async def to_code(config: ConfigType) -> None:
         max_value=15,
         step=1
     )
+
+    varx = cg.Pvariable(config[CONF_ZONE_1][CONF_ID], var.zone_switches[0])
+    await switch.register_switch(varx, config[CONF_ZONE_1])
+
+    varx = cg.Pvariable(config[CONF_ZONE_2][CONF_ID], var.zone_switches[1])
+    await switch.register_switch(varx, config[CONF_ZONE_2])
+
+    varx = cg.Pvariable(config[CONF_ZONE_3][CONF_ID], var.zone_switches[2])
+    await switch.register_switch(varx, config[CONF_ZONE_3])
+
+    varx = cg.Pvariable(config[CONF_ZONE_4][CONF_ID], var.zone_switches[3])
+    await switch.register_switch(varx, config[CONF_ZONE_4])
+
+    varx = cg.Pvariable(config[CONF_ZONE_5][CONF_ID], var.zone_switches[4])
+    await switch.register_switch(varx, config[CONF_ZONE_5])
+
+    varx = cg.Pvariable(config[CONF_ZONE_6][CONF_ID], var.zone_switches[5])
+    await switch.register_switch(varx, config[CONF_ZONE_6])
+
+    varx = cg.Pvariable(config[CONF_ZONE_7][CONF_ID], var.zone_switches[6])
+    await switch.register_switch(varx, config[CONF_ZONE_7])
+
+    varx = cg.Pvariable(config[CONF_ZONE_8][CONF_ID], var.zone_switches[7])
+    await switch.register_switch(varx, config[CONF_ZONE_8])
+
+    varx = cg.Pvariable(config[CONF_ZONE_GROUP_DAY][CONF_ID], var.zone_group_day_switch)
+    await switch.register_switch(varx, config[CONF_ZONE_GROUP_DAY])
+
+    varx = cg.Pvariable(config[CONF_ZONE_GROUP_NIGHT][CONF_ID], var.zone_group_night_switch)
+    await switch.register_switch(varx, config[CONF_ZONE_GROUP_NIGHT])
 
     if CONF_TEMPERATURE_SENSOR in config:
         cg.add(var.set_temperature_sensor(await cg.get_variable(config[CONF_TEMPERATURE_SENSOR])))

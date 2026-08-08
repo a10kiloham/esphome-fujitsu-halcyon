@@ -30,6 +30,7 @@ void FujitsuHalcyonController::setup() {
         {
             .Config = [this](const fujitsu_general::airstage::h::Config& data){ this->update_from_device(data); },
             .Error  = [this](const fujitsu_general::airstage::h::Packet& data){ this->update_from_device(data); },
+            .ZoneConfig = [this](const fujitsu_general::airstage::h::ZoneConfig& data){ this->update_from_device(data); },
             .Function = [this](const fujitsu_general::airstage::h::Function& data){ this->update_from_device(data); },
             .ControllerConfig = [this](const uint8_t address, const fujitsu_general::airstage::h::Config& data){ this->update_from_controller(address, data); },
             .InitializationStage = [this](const fujitsu_general::airstage::h::InitializationStageEnum stage){
@@ -144,7 +145,7 @@ void FujitsuHalcyonController::on_initialization_stage(const fujitsu_general::ai
     // Publish supported features as a human-readable diagnostic string.
     {
         char buf[255];
-        std::snprintf(buf, sizeof(buf), "Mode: %s%s%s%s%s | Fan: %s%s%s%s%s" "%s%s%s%s%s%s",
+        std::snprintf(buf, sizeof(buf), "Mode: %s%s%s%s%s | Fan: %s%s%s%s%s" "%s%s%s%s%s%s%s",
             features.Mode.Auto ? " Auto" : "",
             features.Mode.Heat ? " Heat" : "",
             features.Mode.Cool ? " Cool" : "",
@@ -162,7 +163,8 @@ void FujitsuHalcyonController::on_initialization_stage(const fujitsu_general::ai
             features.SensorSwitching   ? " | Sensor Switching" : "",
             features.Maintenance       ? " | Maintenance"      : "",
             features.VerticalLouvers   ? " | V.Louvers"        : "",
-            features.HorizontalLouvers ? " | H.Louvers"        : ""
+            features.HorizontalLouvers ? " | H.Louvers"        : "",
+            features.Zones             ? " | Zones"            : ""
         );
         this->supported_features_sensor->publish_state(buf);
     }
@@ -185,6 +187,23 @@ void FujitsuHalcyonController::on_initialization_stage(const fujitsu_general::ai
         if (this->filter_sensor->has_state())
             this->filter_sensor->publish_state(this->filter_sensor->state);
         this->reset_filter_button->set_internal(false);
+    }
+
+    // Expose zone dependent entities now that zones are known,
+    // and force a state publish so HA discovers them even if ListEntities already ran
+    if (features.Zones) {
+        auto& zones = this->controller->get_zones();
+
+        for (auto i = 0; i < this->zone_switches.size(); i++)
+            if (zones.EnabledZones[i]) {
+                this->zone_switches[i]->set_internal(false);
+                this->zone_switches[i]->publish_state(this->zone_switches[i]->state);
+            }
+
+        this->zone_group_day_switch->set_internal(false);
+        this->zone_group_day_switch->publish_state(this->zone_group_day_switch->state);
+        this->zone_group_night_switch->set_internal(false);
+        this->zone_group_night_switch->publish_state(this->zone_group_night_switch->state);
     }
 }
 
@@ -215,13 +234,27 @@ void FujitsuHalcyonController::dump_config() {
     if (this->controller->is_initialized()) {
         auto& features = this->controller->get_features();
 
-        ESP_LOGCONFIG(TAG, "  Additional Features:%s", features.FilterTimer || features.Maintenance || features.SensorSwitching ? "" : " NONE");
+        ESP_LOGCONFIG(TAG, "  Additional Features:%s", features.FilterTimer || features.Maintenance || features.SensorSwitching || features.Zones ? "" : " NONE");
         if (features.FilterTimer)
             ESP_LOGCONFIG(TAG, "    - Filter Timer");
         if (features.Maintenance)
             ESP_LOGCONFIG(TAG, "    - Maintenance");
         if (features.SensorSwitching)
             ESP_LOGCONFIG(TAG, "    - Sensor Switching");
+        if (features.Zones) {
+            auto& zones = this->controller->get_zones();
+
+            // Build a comma-separated list of enabled zones
+            char buf[3 * zones.EnabledZones.size() + 1];
+            int offset = 0;
+            for (auto i = 0; i < zones.EnabledZones.size() && offset < sizeof(buf); i++)
+                if (zones.EnabledZones[i])
+                    offset += std::snprintf(buf + offset, sizeof(buf) - offset, "%u, ", i + 1);
+            buf[offset ? offset - 2 : 0] = '\0';
+
+            ESP_LOGCONFIG(TAG, "    - Zones: %s", buf[0] ? buf : "NONE");
+            ESP_LOGCONFIG(TAG, "        Common Zone: %s", zones.ZoneCommon ? "YES" : "NO");
+        }
     }
 
     if (!this->filter_sensor->is_internal())
@@ -404,6 +437,14 @@ void FujitsuHalcyonController::update_from_device(const fujitsu_general::airstag
 
     if (need_to_publish)
         this->publish_state();
+}
+
+void FujitsuHalcyonController::update_from_device(const fujitsu_general::airstage::h::ZoneConfig& data) {
+    for (auto i = 0; i < this->zone_switches.size(); i++)
+        this->zone_switches[i]->publish_state(data.ActiveZones[i]);
+
+    this->zone_group_day_switch->publish_state(data.ActiveZoneGroups.Day);
+    this->zone_group_night_switch->publish_state(data.ActiveZoneGroups.Night);
 }
 
 void FujitsuHalcyonController::update_from_device(const fujitsu_general::airstage::h::Packet& data) {
