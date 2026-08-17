@@ -50,6 +50,13 @@ climate:
     name: None  # Use device friendly_name
     id: arxd12
     controller_address: 1  # 0=Primary, 1=Secondary (use 1 if a wall controller is also connected)
+    # IDs so the display lambda can show boot/bus diagnostics
+    initialization_stage:
+      name: Initialization Stage
+      id: fuji_init_stage
+    connected:
+      name: Connected
+      id: fuji_connected
 
 spi:
   clk_pin: GPIO18
@@ -76,6 +83,18 @@ display:
     update_interval: 1s
     lambda: |-
       auto fuji = id(arxd12);
+
+      // Diagnostic screen until the bus handshake completes (also shown if
+      // the communication watchdog drops the connection later)
+      if (!id(fuji_connected).state) {
+        it.print(10, 10, id(font_small), "Connecting to unit...");
+        it.printf(10, 40, id(font_small), "Bus: %s", id(fuji_init_stage).state.c_str());
+        it.printf(10, 70, id(font_small), "WiFi: %s",
+                  wifi::global_wifi_component->is_connected() ? "connected" : "connecting...");
+        it.printf(10, 100, id(font_small), "HA API: %s",
+                  api::global_api_server->is_connected() ? "connected" : "waiting...");
+        return;
+      }
 
       // Status + temps top half
       if (std::isnan(fuji->current_temperature))
