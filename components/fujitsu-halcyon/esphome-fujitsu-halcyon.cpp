@@ -1,10 +1,10 @@
 #include "esphome-fujitsu-halcyon.h"
 
 #include <array>
+#include <cstdio>
 #include <type_traits>
 
 #include <esphome/core/helpers.h>
-#include <esphome/core/version.h>
 
 namespace esphome::fujitsu_general_airstage_h_controller {
 
@@ -12,17 +12,32 @@ static const auto TAG = "esphome::fujitsu_general_airstage_h_controller";
 
 constexpr std::array ControllerName = { "Primary", "Secondary", "Undocumented" };
 
+void FujitsuHalcyonController::loop() {
+    this->controller->process_uart_data();
+}
+
 void FujitsuHalcyonController::setup() {
+    // Currently no way to do this in IDFUARTComponent YAML configuration without setting the flow control pin.
+    // Using RTS is not needed, but the side effect of suppressing input during output is, as the LIN chip provides loopback.
+    if (auto err = uart_set_mode(static_cast<uart_port_t>(static_cast<uart::IDFUARTComponent*>(this->parent_)->get_hw_serial_number()), UART_MODE_RS485_HALF_DUPLEX); err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set UART mode: %s", esp_err_to_name(err));
+        this->mark_failed();
+        return;
+    }
+
     this->controller = new fujitsu_general::airstage::h::Controller(
-        static_cast<uart::IDFUARTComponent*>(this->parent_)->get_hw_serial_number(),
         this->controller_address_,
         {
             .Config = [this](const fujitsu_general::airstage::h::Config& data){ this->update_from_device(data); },
             .Error  = [this](const fujitsu_general::airstage::h::Packet& data){ this->update_from_device(data); },
+            .ZoneConfig = [this](const fujitsu_general::airstage::h::ZoneConfig& data){ this->update_from_device(data); },
             .Function = [this](const fujitsu_general::airstage::h::Function& data){ this->update_from_device(data); },
             .ControllerConfig = [this](const uint8_t address, const fujitsu_general::airstage::h::Config& data){ this->update_from_controller(address, data); },
             .InitializationStage = [this](const fujitsu_general::airstage::h::InitializationStageEnum stage){
                 this->on_initialization_stage(stage);
+            },
+            .AvailableBytes = [this]() -> size_t {
+                return this->available();
             },
             .ReadBytes  = [this](uint8_t *buf, size_t length){
                 this->read_array(buf, length);
@@ -32,27 +47,24 @@ void FujitsuHalcyonController::setup() {
                 this->write_array(buf, length);
                 this->log_buffer("TX", buf, length);
             }
-        },
-        *static_cast<uart::IDFUARTComponent*>(this->parent_)->get_uart_event_queue()
+        }
     );
 
-    if (!this->controller->start()) {
-        ESP_LOGE(TAG, "Failed to start controller");
-        this->mark_failed();
-        return;
-    }
+    // Apply user-supplied feature overrides from YAML. features_override_ was
+    // initialized to DefaultFeatures and individually mutated by any setters
+    // called from to_code(); fields the user did not specify still hold their
+    // DefaultFeatures value. Must be applied before the first packet is processed;
+    // setup() runs before loop() so this is safe.
+    this->controller->set_features(this->features_override_);
+    this->controller->set_autoconf(this->autoconf_);
 
-    this->connected_sensor->publish_state(false);
+    this->connected_sensor->publish_initial_state(false);
 
     // Use specified sensor for this components reported temperature
     if (this->temperature_sensor_ != nullptr) {
         // Temperature sensor is in Fahrenheit, but need Celsius
-#if ESPHOME_VERSION_CODE >= VERSION_CODE(2025, 11, 0)
         const auto unit_of_measurement = this->temperature_sensor_->get_unit_of_measurement_ref();
         if (unit_of_measurement[unit_of_measurement.size() - 1] == 'F')
-#else
-        if (this->temperature_sensor_->get_unit_of_measurement().ends_with("F"))
-#endif
         {
             this->temperature_sensor_->add_on_raw_state_callback([this](float state) {
                 this->current_temperature = esphome::fahrenheit_to_celsius(state);
@@ -113,21 +125,49 @@ void FujitsuHalcyonController::on_initialization_stage(const fujitsu_general::ai
     using fujitsu_general::airstage::h::InitializationStageEnum;
     using stage_t = std::underlying_type_t<InitializationStageEnum>;
 
-    this->initialization_sensor->publish_state(
-        str_sprintf("(%d/%d)", static_cast<stage_t>(stage), static_cast<stage_t>(InitializationStageEnum::Complete)));
-
-    bool connected = (stage == InitializationStageEnum::Complete);
+    // Update initialization stage sensor
+    char buf[8];
+    std::snprintf(buf, sizeof(buf), "(%u/%u)", static_cast<stage_t>(stage), static_cast<stage_t>(InitializationStageEnum::Complete));
+    this->initialization_sensor->publish_state(buf);
+    ESP_LOGD(TAG, "Initialization stage: %s", buf);
 
     // Update connected sensor
-    if (!this->connected_sensor->has_state() || connected != this->connected_sensor->state)
-        this->connected_sensor->publish_state(connected);
+    this->connected_sensor->publish_state(stage == InitializationStageEnum::Complete);
 
-    if (!connected)
+    // Everything below depends on features being known
+    if (stage <= InitializationStageEnum::FeatureRequestRx)
         return;
 
     // Expose feature dependent entities now that features are known,
     // and force a state publish so HA discovers them even if ListEntities already ran
-    auto features = this->controller->get_features();
+    auto& features = this->controller->get_features();
+
+    // Publish supported features as a human-readable diagnostic string.
+    {
+        char buf[255];
+        std::snprintf(buf, sizeof(buf), "Mode: %s%s%s%s%s | Fan: %s%s%s%s%s" "%s%s%s%s%s%s%s",
+            features.Mode.Auto ? " Auto" : "",
+            features.Mode.Heat ? " Heat" : "",
+            features.Mode.Cool ? " Cool" : "",
+            features.Mode.Dry  ? " Dry"  : "",
+            features.Mode.Fan  ? " Fan"  : "",
+
+            features.FanSpeed.Auto   ? " Auto"   : "",
+            features.FanSpeed.High   ? " High"   : "",
+            features.FanSpeed.Medium ? " Medium" : "",
+            features.FanSpeed.Low    ? " Low"    : "",
+            features.FanSpeed.Quiet  ? " Quiet"  : "",
+
+            features.EconomyMode       ? " | Economy"          : "",
+            features.FilterTimer       ? " | Filter Timer"     : "",
+            features.SensorSwitching   ? " | Sensor Switching" : "",
+            features.Maintenance       ? " | Maintenance"      : "",
+            features.VerticalLouvers   ? " | V.Louvers"        : "",
+            features.HorizontalLouvers ? " | H.Louvers"        : "",
+            features.Zones             ? " | Zones"            : ""
+        );
+        this->supported_features_sensor->publish_state(buf);
+    }
 
     if (features.SensorSwitching && this->temperature_sensor_ != nullptr) {
         this->use_sensor_switch->set_internal(false);
@@ -148,6 +188,23 @@ void FujitsuHalcyonController::on_initialization_stage(const fujitsu_general::ai
             this->filter_sensor->publish_state(this->filter_sensor->state);
         this->reset_filter_button->set_internal(false);
     }
+
+    // Expose zone dependent entities now that zones are known,
+    // and force a state publish so HA discovers them even if ListEntities already ran
+    if (features.Zones) {
+        auto& zones = this->controller->get_zones();
+
+        for (auto i = 0; i < this->zone_switches.size(); i++)
+            if (zones.EnabledZones[i]) {
+                this->zone_switches[i]->set_internal(false);
+                this->zone_switches[i]->publish_state(this->zone_switches[i]->state);
+            }
+
+        this->zone_group_day_switch->set_internal(false);
+        this->zone_group_day_switch->publish_state(this->zone_group_day_switch->state);
+        this->zone_group_night_switch->set_internal(false);
+        this->zone_group_night_switch->publish_state(this->zone_group_night_switch->state);
+    }
 }
 
 void FujitsuHalcyonController::log_buffer(const char* dir, const uint8_t* buf, size_t length) {
@@ -159,7 +216,9 @@ void FujitsuHalcyonController::log_buffer(const char* dir, const uint8_t* buf, s
     this->tzsp_send(tbuf);
 #endif
 
-    ESP_LOGD(TAG, "%s: %02hhX %02hhX %02hhX %02hhX %02hhX %02hhX %02hhX %02hhX", dir, tbuf[0], tbuf[1], tbuf[2], tbuf[3], tbuf[4], tbuf[5], tbuf[6], tbuf[7]);
+    char pretty_buf[esphome::format_hex_pretty_size(tbuf.size())];
+    esphome::format_hex_pretty_to(pretty_buf, sizeof(pretty_buf), tbuf.data(), tbuf.size(), ' ');
+    ESP_LOGD(TAG, "%s: %s", dir, pretty_buf);
 }
 
 void FujitsuHalcyonController::dump_config() {
@@ -173,15 +232,29 @@ void FujitsuHalcyonController::dump_config() {
     ESP_LOGCONFIG(TAG, "  Standby Mode: %s", this->standby_sensor->state ? "ACTIVE" : "NORMAL");
 
     if (this->controller->is_initialized()) {
-        auto features = this->controller->get_features();
+        auto& features = this->controller->get_features();
 
-        ESP_LOGCONFIG(TAG, "  Additional Features:%s", features.FilterTimer || features.Maintenance || features.SensorSwitching ? "" : " NONE");
+        ESP_LOGCONFIG(TAG, "  Additional Features:%s", features.FilterTimer || features.Maintenance || features.SensorSwitching || features.Zones ? "" : " NONE");
         if (features.FilterTimer)
             ESP_LOGCONFIG(TAG, "    - Filter Timer");
         if (features.Maintenance)
             ESP_LOGCONFIG(TAG, "    - Maintenance");
         if (features.SensorSwitching)
             ESP_LOGCONFIG(TAG, "    - Sensor Switching");
+        if (features.Zones) {
+            auto& zones = this->controller->get_zones();
+
+            // Build a comma-separated list of enabled zones
+            char buf[3 * zones.EnabledZones.size() + 1];
+            int offset = 0;
+            for (auto i = 0; i < zones.EnabledZones.size() && offset < sizeof(buf); i++)
+                if (zones.EnabledZones[i])
+                    offset += std::snprintf(buf + offset, sizeof(buf) - offset, "%u, ", i + 1);
+            buf[offset ? offset - 2 : 0] = '\0';
+
+            ESP_LOGCONFIG(TAG, "    - Zones: %s", buf[0] ? buf : "NONE");
+            ESP_LOGCONFIG(TAG, "        Common Zone: %s", zones.ZoneCommon ? "YES" : "NO");
+        }
     }
 
     if (!this->filter_sensor->is_internal())
@@ -206,14 +279,14 @@ void FujitsuHalcyonController::dump_config() {
 climate::ClimateTraits FujitsuHalcyonController::traits() {
     using namespace climate;
 
-    auto features = this->controller->get_features();
+    auto& features = this->controller->get_features();
     auto traits = ClimateTraits();
 
     // Target temperature / Setpoint
     traits.set_visual_temperature_step(1);
     traits.set_visual_min_temperature(fujitsu_general::airstage::h::MinSetpoint);
     traits.set_visual_max_temperature(fujitsu_general::airstage::h::MaxSetpoint);
-#if ESPHOME_VERSION_CODE >= VERSION_CODE(2025, 11, 0)
+
     // Current temperature
     if (this->temperature_sensor_ != nullptr || !this->remote_sensor->is_internal())
         traits.add_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE);
@@ -221,14 +294,6 @@ climate::ClimateTraits FujitsuHalcyonController::traits() {
     // Current humidity
     if (this->humidity_sensor_ != nullptr)
         traits.add_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_HUMIDITY);
-#else
-    // Current temperature
-    if (this->temperature_sensor_ != nullptr || !this->remote_sensor->is_internal())
-        traits.set_supports_current_temperature(true);
-
-    // Current humidity
-    traits.set_supports_current_humidity(this->humidity_sensor_ != nullptr);
-#endif
 
     // Mode
     if (features.Mode.Auto)
@@ -304,7 +369,7 @@ void FujitsuHalcyonController::control(const climate::ClimateCall& call) {
 
     // Swing mode
     if (call.get_swing_mode().has_value()) {
-        auto swing_mode = climate_swing_mode_to_swing_mode(call.get_swing_mode().value());
+        const auto swing_mode = climate_swing_mode_to_swing_mode(call.get_swing_mode().value());
         this->controller->set_horizontal_swing(swing_mode.first, this->ignore_lock_);
         this->controller->set_vertical_swing(swing_mode.second, this->ignore_lock_);
     }
@@ -374,6 +439,14 @@ void FujitsuHalcyonController::update_from_device(const fujitsu_general::airstag
         this->publish_state();
 }
 
+void FujitsuHalcyonController::update_from_device(const fujitsu_general::airstage::h::ZoneConfig& data) {
+    for (auto i = 0; i < this->zone_switches.size(); i++)
+        this->zone_switches[i]->publish_state(data.ActiveZones[i]);
+
+    this->zone_group_day_switch->publish_state(data.ActiveZoneGroups.Day);
+    this->zone_group_night_switch->publish_state(data.ActiveZoneGroups.Night);
+}
+
 void FujitsuHalcyonController::update_from_device(const fujitsu_general::airstage::h::Packet& data) {
     using fujitsu_general::airstage::h::PacketTypeEnum;
 
@@ -391,8 +464,21 @@ void FujitsuHalcyonController::update_from_device(const fujitsu_general::airstag
                 this->error_code_sensor->publish_state("");
             else
             {
-                std::array<uint8_t, 2> errorBytes = { data.SourceAddress, data.Error.ErrorCode };
-                this->error_code_sensor->publish_state(format_hex_pretty(errorBytes.data(), errorBytes.size(), ' '));
+                const auto error_bytes = std::to_array<uint8_t>({ data.SourceAddress, data.Error.ErrorCode });
+                const auto error_buf_len = esphome::format_hex_pretty_size(error_bytes.size());
+                constexpr auto extended_error_buf_len = 4;
+
+                char error_buf[error_buf_len + extended_error_buf_len];
+                esphome::format_hex_pretty_to(error_buf, error_bytes, ' ');
+
+                if (data.Error.ErrorCodeExtended)
+                    std::sprintf(error_buf + error_buf_len - 1, ".%u", data.Error.ErrorCodeExtended);
+
+                // NOTE: Error codes D? appear to be remapped to J?, but maybe not in all cases?
+                if ((data.Error.ErrorCode & 0xF0) == 0xD0)
+                    error_buf[3] = 'J';
+
+                this->error_code_sensor->publish_state(error_buf);
             }
         }
     }
@@ -411,7 +497,7 @@ void FujitsuHalcyonController::update_from_controller(const uint8_t address, con
             this->remote_sensor->set_internal(false);
 
         // Update remote controllers sensor component with remote controllers reported temperature
-        if (data.Controller.Temperature != this->remote_sensor->raw_state)
+        if (data.Controller.Temperature != this->remote_sensor->get_raw_state())
             this->remote_sensor->publish_state(data.Controller.Temperature);
     }
 }
@@ -475,7 +561,7 @@ constexpr fujitsu_general::airstage::h::ModeEnum FujitsuHalcyonController::clima
         // Should not get to this point if traits is respected
         default: return FujitsuMode::Fan;
     }
-} 
+}
 
 constexpr fujitsu_general::airstage::h::FanSpeedEnum FujitsuHalcyonController::climate_fan_mode_to_fan_speed(climate::ClimateFanMode fan_speed) {
     using climate::ClimateFanMode;
