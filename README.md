@@ -66,6 +66,10 @@ climate:
 
   #ignore_lock: true  # Ignore child/part/feature lock set on unit or primary/central remote control
 
+  # Mark the Connected sensor off and restart initialization if the bus goes
+  # quiet for this long. Set to 0s to disable the watchdog.
+  #communication_timeout: 15s
+
   # To capture communications for debugging / analysis
   # Use Wireshark with https://github.com/Omniflux/fujitsu-airstage-h-dissector
   #tzsp:
@@ -168,6 +172,11 @@ The following entities are created automatically in Home Assistant. Feature-depe
 | Zone `#` | Switch | Feature-dependent | Enable/Disable zone `#` |
 | Zone Group Day | Switch | Feature-dependent | Enable/Disable zone group Day |
 | Zone Group Night | Switch | Feature-dependent | Enable/Disable zone group Night |
+
+## Local display examples
+
+- [example-ili9341-touch.yaml](example-ili9341-touch.yaml) - ILI9341 SPI TFT with XPT2046 touchscreen; shows current/set temperature with on-screen Power and Temp Up/Down buttons
+- [example-ssd1309.yaml](example-ssd1309.yaml) - SSD1309/SSD1306 128x64 SPI OLED; shows current/set temperature with physical Temp Up/Down buttons
 
 ## Troubleshooting
 
