@@ -1,9 +1,12 @@
 #include "esphome-fujitsu-halcyon.h"
 
 #include <array>
+#include <cinttypes>
+#include <cmath>
 #include <cstdio>
 #include <type_traits>
 
+#include <esphome/core/hal.h>
 #include <esphome/core/helpers.h>
 
 namespace esphome::fujitsu_general_airstage_h_controller {
@@ -14,6 +17,18 @@ constexpr std::array ControllerName = { "Primary", "Secondary", "Undocumented" }
 
 void FujitsuHalcyonController::loop() {
     this->controller->process_uart_data();
+
+    // Communication watchdog: the bus normally carries packets several times per
+    // second, so a long silence means the indoor unit is off or the wiring failed.
+    // Reinitializing resets the token/handshake state so recovery is clean when
+    // the bus comes back; it also drives the Connected sensor false via the
+    // InitializationStage callback.
+    if (this->communication_timeout_ != 0 && !this->comms_lost_ &&
+        esphome::millis() - this->last_rx_time_ > this->communication_timeout_) {
+        this->comms_lost_ = true;
+        ESP_LOGW(TAG, "No bus activity for %" PRIu32 " ms, marking disconnected", this->communication_timeout_);
+        this->controller->reinitialize();
+    }
 }
 
 void FujitsuHalcyonController::setup() {
@@ -40,6 +55,8 @@ void FujitsuHalcyonController::setup() {
                 return this->available();
             },
             .ReadBytes  = [this](uint8_t *buf, size_t length){
+                this->last_rx_time_ = esphome::millis();
+                this->comms_lost_ = false;
                 this->read_array(buf, length);
                 this->log_buffer("RX", buf, length);
             },
@@ -58,13 +75,16 @@ void FujitsuHalcyonController::setup() {
     this->controller->set_features(this->features_override_);
     this->controller->set_autoconf(this->autoconf_);
 
+    // Start the communication watchdog from setup time rather than boot time
+    this->last_rx_time_ = esphome::millis();
+
     this->connected_sensor->publish_initial_state(false);
 
     // Use specified sensor for this components reported temperature
     if (this->temperature_sensor_ != nullptr) {
         // Temperature sensor is in Fahrenheit, but need Celsius
         const auto unit_of_measurement = this->temperature_sensor_->get_unit_of_measurement_ref();
-        if (unit_of_measurement[unit_of_measurement.size() - 1] == 'F')
+        if (!unit_of_measurement.empty() && unit_of_measurement[unit_of_measurement.size() - 1] == 'F')
         {
             this->temperature_sensor_->add_on_raw_state_callback([this](float state) {
                 this->current_temperature = esphome::fahrenheit_to_celsius(state);
@@ -231,7 +251,7 @@ void FujitsuHalcyonController::dump_config() {
     ESP_LOGCONFIG(TAG, "  Ignore Lock: %s", this->ignore_lock_ ? "YES" : "NO");
     ESP_LOGCONFIG(TAG, "  Standby Mode: %s", this->standby_sensor->state ? "ACTIVE" : "NORMAL");
 
-    if (this->controller->is_initialized()) {
+    if (this->controller != nullptr && this->controller->is_initialized()) {
         auto& features = this->controller->get_features();
 
         ESP_LOGCONFIG(TAG, "  Additional Features:%s", features.FilterTimer || features.Maintenance || features.SensorSwitching || features.Zones ? "" : " NONE");
@@ -279,7 +299,9 @@ void FujitsuHalcyonController::dump_config() {
 climate::ClimateTraits FujitsuHalcyonController::traits() {
     using namespace climate;
 
-    auto& features = this->controller->get_features();
+    // Fall back to the configured/default features if setup() failed before
+    // the controller was constructed
+    auto& features = this->controller != nullptr ? this->controller->get_features() : this->features_override_;
     auto traits = ClimateTraits();
 
     // Target temperature / Setpoint
@@ -345,9 +367,12 @@ void FujitsuHalcyonController::control(const climate::ClimateCall& call) {
     using climate::ClimatePreset;
     using climate::ClimateSwingMode;
 
+    if (this->controller == nullptr)
+        return;
+
     // Target temperature / Setpoint
     if (call.get_target_temperature().has_value())
-        this->controller->set_setpoint(call.get_target_temperature().value(), this->ignore_lock_);
+        this->controller->set_setpoint(std::lroundf(call.get_target_temperature().value()), this->ignore_lock_);
 
     // Economy mode
     if (call.get_preset().has_value())

@@ -81,6 +81,7 @@ class FujitsuHalcyonController : public Component, public climate::Climate, publ
         climate::ClimateTraits traits() override;
 
         void set_ignore_lock(bool ignore_lock) { this->ignore_lock_ = ignore_lock; }
+        void set_communication_timeout(uint32_t timeout_ms) { this->communication_timeout_ = timeout_ms; }
         void set_humidity_sensor(sensor::Sensor* humidity_sensor) { this->humidity_sensor_ = humidity_sensor; }
         void set_temperature_sensor(sensor::Sensor* temperature_sensor) { this->temperature_sensor_ = temperature_sensor; }
         void set_temperature_controller_address(uint8_t temperature_controller_address) { this->temperature_controller_address_ = temperature_controller_address; }
@@ -125,7 +126,13 @@ class FujitsuHalcyonController : public Component, public climate::Climate, publ
         fujitsu_general::airstage::h::Features features_override_ = fujitsu_general::airstage::h::DefaultFeatures;
 
     private:
-        fujitsu_general::airstage::h::Controller* controller;
+        // Remains nullptr if setup() fails before construction; entity callbacks
+        // (traits/control/dump_config) may still run in that state and must guard.
+        fujitsu_general::airstage::h::Controller* controller{nullptr};
+
+        uint32_t communication_timeout_{15000};
+        uint32_t last_rx_time_{0};
+        bool comms_lost_{false};
 
         void update_from_device(const fujitsu_general::airstage::h::Config& data);
         void update_from_device(const fujitsu_general::airstage::h::ZoneConfig& data);
