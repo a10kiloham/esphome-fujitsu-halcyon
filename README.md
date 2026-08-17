@@ -175,8 +175,10 @@ The following entities are created automatically in Home Assistant. Feature-depe
 
 ## Local display examples
 
+Configured for an M5Stack AtomS3 Lite on a FOSV Fuji-Atom-Interface base; see [WIRING.md](WIRING.md) for wiring diagrams and pin tables.
+
 - [example-ili9341-touch.yaml](example-ili9341-touch.yaml) - ILI9341 SPI TFT with XPT2046 touchscreen; shows current/set temperature with on-screen Power and Temp Up/Down buttons
-- [example-ssd1309.yaml](example-ssd1309.yaml) - SSD1309/SSD1306 128x64 SPI OLED; shows current/set temperature with physical Temp Up/Down buttons
+- [example-ssd1309.yaml](example-ssd1309.yaml) - SSD1309/SSD1306 128x64 I2C OLED; shows current/set temperature with physical Temp Up/Down buttons
 
 ## Troubleshooting
 

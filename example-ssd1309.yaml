@@ -1,11 +1,13 @@
-# Fujitsu AirStage-H controller with an SSD1309 128x64 SPI OLED.
+# Fujitsu AirStage-H controller on an M5Stack AtomS3 Lite + FOSV Fuji-Atom-Interface,
+# with an SSD1309/SSD1306 128x64 OLED on I2C via the Grove connector.
 # Shows current + set temperature; two physical push buttons adjust the setpoint.
 #
-# Wiring assumed (adjust to your board):
-#   Fujitsu 3-wire bus transceiver: TX GPIO17, RX GPIO16
-#   SPI: CLK GPIO18, MOSI GPIO23 (MISO unused by the OLED)
-#   Display: CS GPIO5, DC GPIO4, RESET GPIO2
-#   Buttons (to GND): Temp Up GPIO32, Temp Down GPIO33
+# See WIRING.md for the full wiring diagram (including the SPI alternative for
+# SPI-only OLED modules). Summary:
+#   Fujitsu bus (FOSV base): TX G5, RX G6 (fixed by the FOSV PCB)
+#   OLED (I2C): SDA G1, SCL G2 (Grove white/yellow), VCC Grove 5V*, GND Grove GND
+#     * most 4-pin I2C OLED modules accept 3.3-5V - check yours
+#   Buttons (to GND): Temp Up G7, Temp Down G8
 
 substitutions:
   device_name: halcyon-controller
@@ -19,7 +21,7 @@ esphome:
   friendly_name: ${friendly_name}
 
 esp32:
-  board: nodemcu-32s  # match your board
+  board: m5stack-atoms3
   framework:
     type: esp-idf  # required by the fujitsu-halcyon component
 
@@ -40,8 +42,8 @@ captive_portal:
 logger:
 
 uart:
-  tx_pin: GPIO17
-  rx_pin: GPIO16
+  tx_pin: GPIO5  # FOSV Fuji-Atom-Interface on AtomS3 Lite
+  rx_pin: GPIO6
   baud_rate: 500
   parity: EVEN
 
@@ -58,10 +60,9 @@ climate:
       name: Connected
       id: fuji_connected
 
-spi:
-  clk_pin: GPIO18
-  mosi_pin: GPIO23
-  miso_pin: GPIO19
+i2c:
+  sda: GPIO1
+  scl: GPIO2
 
 font:
   - file: "gfonts://Roboto"
@@ -72,11 +73,9 @@ font:
     size: 24
 
 display:
-  - platform: ssd1306_spi
+  - platform: ssd1306_i2c
     model: "SSD1306 128x64"  # SSD1309 panels are driver compatible with the SSD1306 model
-    cs_pin: GPIO5
-    dc_pin: GPIO4
-    reset_pin: GPIO2
+    address: 0x3C
     id: oled
     update_interval: 1s
     lambda: |-
@@ -111,7 +110,7 @@ binary_sensor:
   - platform: gpio
     name: "Temp Up"
     pin:
-      number: GPIO32
+      number: GPIO7
       inverted: true
       mode:
         input: true
@@ -128,7 +127,7 @@ binary_sensor:
   - platform: gpio
     name: "Temp Down"
     pin:
-      number: GPIO33
+      number: GPIO8
       inverted: true
       mode:
         input: true
