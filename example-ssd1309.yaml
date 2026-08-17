@@ -1,0 +1,124 @@
+# Fujitsu AirStage-H controller with an SSD1309 128x64 SPI OLED.
+# Shows current + set temperature; two physical push buttons adjust the setpoint.
+#
+# Wiring assumed (adjust to your board):
+#   Fujitsu 3-wire bus transceiver: TX GPIO17, RX GPIO16
+#   SPI: CLK GPIO18, MOSI GPIO23 (MISO unused by the OLED)
+#   Display: CS GPIO5, DC GPIO4, RESET GPIO2
+#   Buttons (to GND): Temp Up GPIO32, Temp Down GPIO33
+
+substitutions:
+  device_name: halcyon-controller
+  friendly_name: Halcyon Controller
+
+external_components:
+  - source: github://a10kiloham/esphome-fujitsu-halcyon
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: nodemcu-32s  # match your board
+  framework:
+    type: esp-idf  # required by the fujitsu-halcyon component
+
+api:
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "${friendly_name} Fallback"
+
+captive_portal:
+
+logger:
+
+uart:
+  tx_pin: GPIO17
+  rx_pin: GPIO16
+  baud_rate: 500
+  parity: EVEN
+
+climate:
+  - platform: fujitsu-halcyon
+    name: None  # Use device friendly_name
+    id: arxd12
+    controller_address: 1  # 0=Primary, 1=Secondary (use 1 if a wall controller is also connected)
+
+spi:
+  clk_pin: GPIO18
+  mosi_pin: GPIO23
+  miso_pin: GPIO19
+
+font:
+  - file: "gfonts://Roboto"
+    id: font_small
+    size: 12
+  - file: "gfonts://Roboto"
+    id: font_big
+    size: 24
+
+display:
+  - platform: ssd1306_spi
+    model: "SSD1306 128x64"  # SSD1309 panels are driver compatible with the SSD1306 model
+    cs_pin: GPIO5
+    dc_pin: GPIO4
+    reset_pin: GPIO2
+    id: oled
+    update_interval: 1s
+    lambda: |-
+      auto fuji = id(arxd12);
+
+      it.print(0, 0, id(font_small),
+               fuji->mode == climate::CLIMATE_MODE_OFF ? "Status: OFF" : "Status: RUNNING");
+
+      if (std::isnan(fuji->current_temperature))
+        it.print(0, 16, id(font_big), "--.-°C");
+      else
+        it.printf(0, 16, id(font_big), "%.1f°C", fuji->current_temperature);
+
+      if (std::isnan(fuji->target_temperature))
+        it.print(0, 48, id(font_small), "Set: --°C");
+      else
+        it.printf(0, 48, id(font_small), "Set: %.0f°C", fuji->target_temperature);
+
+binary_sensor:
+  - platform: gpio
+    name: "Temp Up"
+    pin:
+      number: GPIO32
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    on_press:
+      - lambda: |-
+          auto t = id(arxd12).target_temperature;
+          if (std::isnan(t)) return;
+          auto call = id(arxd12).make_call();
+          call.set_target_temperature(std::min(t + 1.0f, 30.0f));
+          call.perform();
+      - component.update: oled
+
+  - platform: gpio
+    name: "Temp Down"
+    pin:
+      number: GPIO33
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    on_press:
+      - lambda: |-
+          auto t = id(arxd12).target_temperature;
+          if (std::isnan(t)) return;
+          auto call = id(arxd12).make_call();
+          call.set_target_temperature(std::max(t - 1.0f, 16.0f));
+          call.perform();
+      - component.update: oled
