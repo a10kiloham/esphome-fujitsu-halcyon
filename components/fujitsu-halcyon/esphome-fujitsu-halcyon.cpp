@@ -1,5 +1,6 @@
 #include "esphome-fujitsu-halcyon.h"
 
+#include <algorithm>
 #include <array>
 #include <cinttypes>
 #include <cmath>
@@ -145,9 +146,25 @@ void FujitsuHalcyonController::on_initialization_stage(const fujitsu_general::ai
     using fujitsu_general::airstage::h::InitializationStageEnum;
     using stage_t = std::underlying_type_t<InitializationStageEnum>;
 
+    // Indexed by InitializationStageEnum; kept short for small local displays
+    constexpr std::array StageNames = {
+        "Detect Features",    // DetectFeatureSupport
+        "Feature Req TX",     // FeatureRequestTx
+        "Feature Req RX",     // FeatureRequestRx
+        "Zone Query",         // ZoneRequestEnabled
+        "Find Next Ctrl TX",  // FindNextControllerTx
+        "Find Next Ctrl RX",  // FindNextControllerRx
+        "Zone State",         // ZoneRequestActive
+        "Complete"            // Complete
+    };
+    static_assert(StageNames.size() == static_cast<stage_t>(InitializationStageEnum::Complete) + 1);
+
     // Update initialization stage sensor
-    char buf[8];
-    std::snprintf(buf, sizeof(buf), "(%u/%u)", static_cast<stage_t>(stage), static_cast<stage_t>(InitializationStageEnum::Complete));
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "(%u/%u) %s",
+        static_cast<stage_t>(stage),
+        static_cast<stage_t>(InitializationStageEnum::Complete),
+        StageNames[std::min(static_cast<size_t>(stage), StageNames.size() - 1)]);
     this->initialization_sensor->publish_state(buf);
     ESP_LOGD(TAG, "Initialization stage: %s", buf);
 
