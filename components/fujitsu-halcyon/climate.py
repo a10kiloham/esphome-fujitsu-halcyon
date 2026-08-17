@@ -37,6 +37,7 @@ from esphome.const import (
     UNIT_CELSIUS,
 )
 
+from esphome.core import CORE
 from esphome.types import ConfigType
 
 CODEOWNERS = ["@Omniflux"]
@@ -50,6 +51,7 @@ def AUTO_LOAD(config: ConfigType) -> list[str]:
 
     return load
 
+CONF_COMMUNICATION_TIMEOUT = "communication_timeout"
 CONF_CONTROLLER_ADDRESS = "controller_address"
 CONF_TEMPERATURE_CONTROLLER_ADDRESS = "temperature_controller_address"
 CONF_TEMPERATURE_SENSOR = "temperature_sensor_id"
@@ -125,6 +127,8 @@ COMPONENT_NAME = __name__.split('.')[-2]
 CONFIG_SCHEMA = climate.climate_schema(FujitsuHalcyonController).extend(
     {
         cv.Optional(CONF_CONTROLLER_ADDRESS, default=0): cv.int_range(0, 15),
+        # Mark disconnected and restart initialization if no bus activity for this long; 0s disables
+        cv.Optional(CONF_COMMUNICATION_TIMEOUT, default="15s"): cv.positive_time_period_milliseconds,
         cv.Optional(CONF_TEMPERATURE_CONTROLLER_ADDRESS, default=0): cv.int_range(0, 15),
         cv.Optional(CONF_IGNORE_LOCK, default=False): cv.boolean,
         cv.Optional(CONF_TEMPERATURE_SENSOR): cv.use_id(sensor.Sensor),
@@ -276,6 +280,15 @@ def check_esphome_version(config):
 
     return config
 
+def check_platform(config):
+    # The component uses the ESP-IDF UART driver directly (IDFUARTComponent,
+    # available on ESP32 under both frameworks); fail with a clear message
+    # instead of a C++ compile error on other platforms
+    if not CORE.is_esp32:
+        raise cv.Invalid(f"Component {COMPONENT_NAME} requires an ESP32.")
+
+    return config
+
 def final_validate_uart_schema(config):
     def validate_rx_full_threshold(value):
         if not isinstance(value, int) or value < PACKET_FRAME_SIZE * 2:
@@ -310,6 +323,7 @@ def final_validate_uart_schema(config):
 
 FINAL_VALIDATE_SCHEMA = cv.All(
     check_esphome_version,
+    check_platform,
     final_validate_uart_schema,
     uart.final_validate_device_schema(
         COMPONENT_NAME,
@@ -333,6 +347,7 @@ async def to_code(config: ConfigType) -> None:
 
     cg.add(var.set_temperature_controller_address(config[CONF_TEMPERATURE_CONTROLLER_ADDRESS]))
     cg.add(var.set_ignore_lock(config[CONF_IGNORE_LOCK]))
+    cg.add(var.set_communication_timeout(config[CONF_COMMUNICATION_TIMEOUT].total_milliseconds))
 
     # Apply feature negotiation overrides. Anything omitted from YAML keeps the
     # in-code DefaultFeatures value.
