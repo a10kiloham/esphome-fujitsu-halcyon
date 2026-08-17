@@ -1,11 +1,12 @@
-# Fujitsu AirStage-H controller with an ILI9341 SPI touchscreen (XPT2046).
+# Fujitsu AirStage-H controller on an M5Stack AtomS3 Lite + FOSV Fuji-Atom-Interface,
+# with an ILI9341 SPI touchscreen (XPT2046).
 # Shows current + set temperature and provides on-screen Power / Temp Up / Temp Down buttons.
 #
-# Wiring assumed (adjust to your board):
-#   Fujitsu 3-wire bus transceiver: TX GPIO17, RX GPIO16
-#   SPI: CLK GPIO18, MOSI GPIO23, MISO GPIO19
-#   Display: CS GPIO5, DC GPIO4, RESET GPIO2
-#   Touch: CS GPIO27, IRQ GPIO33
+# See WIRING.md for the full wiring diagram. Summary:
+#   Fujitsu bus (FOSV base): TX G5, RX G6 (fixed by the FOSV PCB)
+#   SPI: CLK G1, MOSI G2 (Grove), MISO G7
+#   Display: CS G8, DC G38 (RESET tied to 3V3, LED backlight to 3V3)
+#   Touch: CS G39 (IRQ left unconnected - polled)
 
 substitutions:
   device_name: halcyon-controller
@@ -19,7 +20,7 @@ esphome:
   friendly_name: ${friendly_name}
 
 esp32:
-  board: nodemcu-32s  # match your board
+  board: m5stack-atoms3
   framework:
     type: esp-idf  # required by the fujitsu-halcyon component
 
@@ -40,8 +41,8 @@ captive_portal:
 logger:
 
 uart:
-  tx_pin: GPIO17
-  rx_pin: GPIO16
+  tx_pin: GPIO5  # FOSV Fuji-Atom-Interface on AtomS3 Lite
+  rx_pin: GPIO6
   baud_rate: 500
   parity: EVEN
 
@@ -59,9 +60,9 @@ climate:
       id: fuji_connected
 
 spi:
-  clk_pin: GPIO18
-  mosi_pin: GPIO23
-  miso_pin: GPIO19
+  clk_pin: GPIO1
+  mosi_pin: GPIO2
+  miso_pin: GPIO7
 
 font:
   - file: "gfonts://Roboto"
@@ -74,9 +75,9 @@ font:
 display:
   - platform: ili9xxx
     model: ili9341
-    cs_pin: GPIO5
-    dc_pin: GPIO4
-    reset_pin: GPIO2
+    cs_pin: GPIO8
+    dc_pin: GPIO38
+    # No reset_pin - tie the module's RESET to 3V3
     invert_colors: false
     rotation: 90  # 320x240 landscape to match the button coordinates below
     id: tft
@@ -118,8 +119,8 @@ display:
 touchscreen:
   - platform: xpt2046
     id: touch
-    cs_pin: GPIO27
-    interrupt_pin: GPIO33
+    cs_pin: GPIO39
+    # No interrupt_pin - polled; leave the module's T_IRQ unconnected
     display: tft
     calibration:
       x_min: 280
