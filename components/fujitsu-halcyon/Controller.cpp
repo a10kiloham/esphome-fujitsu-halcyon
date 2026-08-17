@@ -12,144 +12,44 @@ namespace fujitsu_general::airstage::h {
 
 static const char* TAG = "fujitsu_general::airstage::h::Controller";
 
-bool Controller::start() {
-    int err;
-    auto uart_config = UARTConfig;
-    constexpr int intr_alloc_flags = 0;
-    constexpr uint32_t queue_size = 20; // ?
-    constexpr uint32_t stack_depth = 4096; // ?
-    constexpr UBaseType_t task_priority = 12; // ?
+void Controller::process_uart_data() {
+    auto buffer_len = this->uart_available_bytes();
+    if (buffer_len >= Packet::FrameSize) {
+        Packet::Buffer buffer;
 
-    // User should have called uart_set_pin before this point if necessary
+        // Discard partial frame
+        if (auto discard = buffer_len % buffer.size()) {
+            this->uart_read_bytes(buffer.data(), discard);
+            ESP_LOGW(TAG, "Discarded %d bytes", discard);
+        }
 
-    if (this->uart_event_queue == nullptr && uart_is_driver_installed(this->uart_num)) {
-        err = uart_driver_delete(this->uart_num);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to delete UART driver: %s", esp_err_to_name(err));
-            return false;
+        // For each frame
+        while (buffer_len) {
+            this->uart_read_bytes(buffer.data(), buffer.size());
+            buffer_len = this->uart_available_bytes();
+            this->process_packet(buffer, buffer_len == 0 /* Indicates final packet on wire */);
         }
     }
-
-    if (!uart_is_driver_installed(this->uart_num)) {
-        const auto buffer_size = UART_HW_FIFO_LEN(this->uart_num) * 2;
-        err = uart_driver_install(this->uart_num, buffer_size, buffer_size, queue_size, &this->uart_event_queue, intr_alloc_flags);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to install UART driver: %s", esp_err_to_name(err));
-            return false;
-        }
-    }
-
-    err = uart_param_config(this->uart_num, &uart_config);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to configure UART: %s", esp_err_to_name(err));
-        return false;
-    }
-
-    err = uart_set_mode(this->uart_num, UART_MODE_RS485_HALF_DUPLEX);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set UART mode: %s", esp_err_to_name(err));
-        return false;
-    }
-
-    // Ensure large enough not to trigger mid frame, resynchronize from rx_timeout instead
-    err = uart_set_rx_full_threshold(this->uart_num, Packet::FrameSize * 4);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set UART RX full threshold: %s", esp_err_to_name(err));
-        return false;
-    }
-
-    // Default timeout (time to transmit 10 characters at 500bps) is too long
-    // If we wait for default timeout the transmit window is over before processing even begins.
-    err = uart_set_rx_timeout(this->uart_num, UARTInterPacketSymbolSpacing);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set UART RX timeout: %s", esp_err_to_name(err));
-        return false;
-    }
-
-    xTaskCreate([](void* o){ static_cast<Controller*>(o)->uart_event_task(); }, "UART_Event", stack_depth, this, task_priority, NULL);
-
-    return true;
 }
 
-void Controller::uart_event_task() {
-    uart_event_t event;
-
-    for(;;) {
-        if (xQueueReceive(this->uart_event_queue, &event, portMAX_DELAY)) {
-            switch(event.type) {
-                [[likely]] case UART_DATA:
-                    Packet::Buffer buffer;
-                    size_t buffer_len;
-
-                    // Discard partial frame
-                    uart_get_buffered_data_len(this->uart_num, &buffer_len);
-                    if (auto discard = buffer_len % buffer.size()) {
-                        this->uart_read_bytes(buffer.data(), discard);
-                        ESP_LOGW(TAG, "Discarded %d bytes", discard);
-                    }
-
-                    // For each frame
-                    for (auto i = 0; i < event.size / buffer.size(); i++) {
-                        this->uart_read_bytes(buffer.data(), buffer.size());
-                        uart_get_buffered_data_len(this->uart_num, &buffer_len);
-                        this->process_packet(buffer, buffer_len == 0 /* Indicates final packet on wire */);
-                    }
-
-                    break;
-
-                case UART_BREAK:
-                    // TODO Why rx break after tx?
-                    ESP_LOGD(TAG, "UART break!");
-                    break;
-
-                case UART_BUFFER_FULL:
-                    // Something went wrong - don't try to catch up,
-                    // just discard all pending data and start over
-                    ESP_LOGW(TAG, "UART ring buffer full!");
-                    uart_flush_input(this->uart_num);
-                    xQueueReset(this->uart_event_queue);
-                    break;
-
-                case UART_FIFO_OVF:
-                    // Something went wrong - don't try to catch up,
-                    // just discard all pending data and start over
-                    ESP_LOGW(TAG, "UART FIFO Overflow!");
-                    uart_flush_input(this->uart_num);
-                    xQueueReset(this->uart_event_queue);
-                    break;
-
-                case UART_PARITY_ERR:
-                    ESP_LOGW(TAG, "UART parity error");
-                    break;
-
-                case UART_FRAME_ERR:
-                    ESP_LOGW(TAG, "UART frame error");
-                    break;
-
-                default:
-                    ESP_LOGW(TAG, "Unhandled UART event type: %d", event.type);
-                    break;
-            }
-        }   
-    }
+size_t Controller::uart_available_bytes() {
+    return this->callbacks.AvailableBytes ? callbacks.AvailableBytes() : 0;
 }
 
 void Controller::uart_read_bytes(uint8_t *buf, size_t length) {
     if (this->callbacks.ReadBytes)
         callbacks.ReadBytes(buf, length);
-    else
-        ::uart_read_bytes(this->uart_num, buf, length, portMAX_DELAY);
 }
 
 void Controller::uart_write_bytes(const uint8_t *buf, size_t length) {
     if (this->callbacks.WriteBytes)
         callbacks.WriteBytes(buf, length);
-    else
-        ::uart_write_bytes(this->uart_num, buf, length);
 }
 
 void Controller::set_initialization_stage(const InitializationStageEnum stage) {
     this->initialization_stage = stage;
+
+    // This callback is not deferred; may need to redesign if it causes a delay beyond the transmit window
     if (this->callbacks.InitializationStage)
         callbacks.InitializationStage(stage);
 }
@@ -161,14 +61,14 @@ void Controller::process_packet(const Packet::Buffer& buffer, bool lastPacketOnW
     // Parse buffer
     Packet packet(buffer);
 
-    // Finish initialization
+    // Save token destination
     if (this->initialization_stage == InitializationStageEnum::FindNextControllerRx) {
         // Controller with address > configured did not transmit
         if (packet.SourceType != AddressTypeEnum::Controller)
             this->next_token_destination_type = AddressTypeEnum::IndoorUnit;
 
         // Fujitsu RC1 checks for next controller twice (in case of slow booting controller?), but we are only checking once
-        this->set_initialization_stage(InitializationStageEnum::Complete);
+        this->set_initialization_stage(this->features.Zones ? InitializationStageEnum::ZoneRequestActive : InitializationStageEnum::Complete);
     }
 
     // Process packets from Indoor Units
@@ -176,11 +76,26 @@ void Controller::process_packet(const Packet::Buffer& buffer, bool lastPacketOnW
         switch (packet.Type) {
             [[likely]] case PacketTypeEnum::Config:
                 if (this->initialization_stage == InitializationStageEnum::DetectFeatureSupport) {
-                    if (packet.Config.IndoorUnit.UnknownFlags == 2) { // Guessing this means no feature support among other things
-                        this->features = DefaultFeatures;
+                    // Advance to FindNextControllerTx (skip feature negotiation entirely) if:
+                    //  - autoconf is disabled (use the configured features directly), or
+                    //  - the IU's UnknownFlags == 2 (no feature negotiation support).
+                    // Otherwise, transition to FeatureRequestTx to send a FeatureRequest packet
+                    // when our turn with the token comes around. The actual transmission and
+                    // the subsequent transition to FeatureRequestRx happen later in this function.
+                    // Note: this->features is already initialized to DefaultFeatures (or to a
+                    // user-supplied override via set_features()), so no assignment is needed here.
+                    if (!this->autoconf ||
+                        packet.Config.IndoorUnit.UnknownFlags == 2) {
                         this->set_initialization_stage(InitializationStageEnum::FindNextControllerTx);
                     } else
-                        this->set_initialization_stage(InitializationStageEnum::FeatureRequest);
+                        this->set_initialization_stage(InitializationStageEnum::FeatureRequestTx);
+                }
+                else if (this->initialization_stage == InitializationStageEnum::FeatureRequestRx) {
+                    // We already transmitted a FeatureRequest and the IU replied with another
+                    // Config instead of a Features packet -> the IU does not support feature
+                    // negotiation. Fall back to the in-code (or user-supplied) defaults already
+                    // present in this->features and proceed.
+                    this->set_initialization_stage(InitializationStageEnum::FindNextControllerTx);
                 }
 
                 if (this->last_error_flag != packet.Config.IndoorUnit.Error)
@@ -204,14 +119,32 @@ void Controller::process_packet(const Packet::Buffer& buffer, bool lastPacketOnW
 
             case PacketTypeEnum::Features:
                 this->features = packet.Features;
-                this->set_initialization_stage(InitializationStageEnum::FindNextControllerTx);
+                this->set_initialization_stage(this->features.Zones ? InitializationStageEnum::ZoneRequestEnabled : InitializationStageEnum::FindNextControllerTx);
                 break;
 
             case PacketTypeEnum::Function:
                 if (this->callbacks.Function)
                     deferred_callback = [&](){ this->callbacks.Function(packet.Function); };
                 break;
+
             case PacketTypeEnum::Status:
+                break;
+
+            case PacketTypeEnum::ZoneConfig:
+                this->current_zone_configuration = packet.ZoneConfig;
+
+                if (this->initialization_stage == InitializationStageEnum::ZoneRequestActive)
+                    this->set_initialization_stage(InitializationStageEnum::Complete);
+
+                if (this->callbacks.ZoneConfig)
+                    deferred_callback = [&](){ this->callbacks.ZoneConfig(this->current_zone_configuration); };
+                break;
+
+            case PacketTypeEnum::ZoneFunction:
+                this->zones = packet.ZoneFunction.IndoorUnit;
+
+                if (this->initialization_stage == InitializationStageEnum::ZoneRequestEnabled)
+                    this->set_initialization_stage(InitializationStageEnum::FindNextControllerTx);
                 break;
         }
     } else {
@@ -240,11 +173,37 @@ void Controller::process_packet(const Packet::Buffer& buffer, bool lastPacketOnW
         tx_packet.TokenDestinationType = this->next_token_destination_type;
         tx_packet.TokenDestinationAddress = this->next_token_destination_type == AddressTypeEnum::Controller ? this->controller_address + 1 : 1;
 
-        if (this->initialization_stage == InitializationStageEnum::FeatureRequest)
-            tx_packet.Type = PacketTypeEnum::Features;
-        else if ((error_flag_changed && this->is_primary_controller()) ||
-                 (packet.Type == PacketTypeEnum::Error && !this->is_primary_controller()))
+        if ((error_flag_changed && this->is_primary_controller()) ||
+            (packet.Type == PacketTypeEnum::Error && !this->is_primary_controller()))
             tx_packet.Type = PacketTypeEnum::Error;
+        else if (this->initialization_stage == InitializationStageEnum::FeatureRequestTx) {
+            tx_packet.Type = PacketTypeEnum::Features;
+            // Advance only after the request is actually transmitted, mirroring
+            // the FindNextControllerTx -> FindNextControllerRx transition above.
+            this->set_initialization_stage(InitializationStageEnum::FeatureRequestRx);
+        }
+        else if (this->initialization_stage == InitializationStageEnum::ZoneRequestEnabled)
+            tx_packet.Type = PacketTypeEnum::ZoneFunction;
+        else if (this->initialization_stage == InitializationStageEnum::ZoneRequestActive)
+            tx_packet.Type = PacketTypeEnum::ZoneConfig;
+        else if (this->zone_configuration_changes.any()) {
+            tx_packet.Type = PacketTypeEnum::ZoneConfig;
+            tx_packet.ZoneConfig = this->current_zone_configuration;
+            tx_packet.ZoneConfig.Controller.Write = true;
+
+            // Overwrite fields last received from Indoor Unit
+            for (size_t i = ZoneSettableFields::Zone1Active; i <= ZoneSettableFields::Zone8Active; i++)
+                if (this->zone_configuration_changes[i])
+                    tx_packet.ZoneConfig.ActiveZones[i] = this->changed_zone_configuration.ActiveZones[i];
+
+            if (this->zone_configuration_changes[ZoneSettableFields::ZoneGroupDayActive])
+                tx_packet.ZoneConfig.ActiveZoneGroups.Day = this->changed_zone_configuration.ActiveZoneGroups.Day;
+
+            if (this->zone_configuration_changes[ZoneSettableFields::ZoneGroupNightActive])
+                tx_packet.ZoneConfig.ActiveZoneGroups.Night = this->changed_zone_configuration.ActiveZoneGroups.Night;
+
+            this->zone_configuration_changes.reset();
+        }
         else if (!this->function_queue.empty()) {
             tx_packet.Type = PacketTypeEnum::Function;
             tx_packet.Function = this->function_queue.front();
@@ -523,6 +482,54 @@ bool Controller::maintenance(bool ignore_lock) {
 
     this->changed_configuration.Controller.Maintenance = true;
     this->configuration_changes[SettableFields::Maintenance] = true;
+    return true;
+}
+
+bool Controller::set_zone(uint8_t zone, bool active, bool ignore_lock) {
+    if (!ignore_lock && this->current_configuration.IndoorUnit.Lock.All)
+        return false;
+
+    if (zone >= MaxZone || !this->zones.EnabledZones[zone])
+        return false;
+
+    // Ensure at least one outlet is open
+    if (!active && !this->zones.ZoneCommon) {
+        // Merge current and changed zone configurations to determine if any zones will remain active
+        auto merged_active_zones = this->current_zone_configuration.ActiveZones;
+        if (this->zone_configuration_changes.any())
+            for (auto i = 0; i < MaxZone; i++)
+                if (this->zone_configuration_changes[i])
+                    merged_active_zones[i] = this->changed_zone_configuration.ActiveZones[i];
+        merged_active_zones[zone] = active;
+
+        if (merged_active_zones.none())
+            return false;
+    }
+
+    // Invalidate active zone groups
+    this->set_zone_group_day(false, true);
+    this->set_zone_group_night(false, true);
+
+    this->changed_zone_configuration.ActiveZones[zone] = active;
+    this->zone_configuration_changes[zone] = true;
+    return true;
+}
+
+bool Controller::set_zone_group_day(bool active, bool ignore_lock) {
+    if (!ignore_lock && this->current_configuration.IndoorUnit.Lock.All)
+        return false;
+
+    this->changed_zone_configuration.ActiveZoneGroups.Day = active;
+    this->zone_configuration_changes[ZoneSettableFields::ZoneGroupDayActive] = true;
+    return true;
+}
+
+bool Controller::set_zone_group_night(bool active, bool ignore_lock) {
+    if (!ignore_lock && this->current_configuration.IndoorUnit.Lock.All)
+        return false;
+
+    this->changed_zone_configuration.ActiveZoneGroups.Night = active;
+    this->zone_configuration_changes[ZoneSettableFields::ZoneGroupNightActive] = true;
     return true;
 }
 

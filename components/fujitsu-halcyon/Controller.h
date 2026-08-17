@@ -4,8 +4,6 @@
 #include <functional>
 #include <queue>
 
-#include <freertos/FreeRTOS.h>
-#include <freertos/queue.h>
 #include <driver/uart.h>
 
 #include "Packet.h"
@@ -13,13 +11,13 @@
 namespace fujitsu_general::airstage::h {
 
 constexpr uart_config_t UARTConfig = {
-        .baud_rate = 500,
-        .data_bits = UART_DATA_8_BITS,
-        .parity    = UART_PARITY_EVEN,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .rx_flow_ctrl_thresh = 0,
-        .source_clk = UART_SCLK_DEFAULT,
+    .baud_rate = 500,
+    .data_bits = UART_DATA_8_BITS,
+    .parity    = UART_PARITY_EVEN,
+    .stop_bits = UART_STOP_BITS_1,
+    .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+    .rx_flow_ctrl_thresh = 0,
+    .source_clk = UART_SCLK_DEFAULT,
 };
 
 constexpr uint8_t UARTInterPacketSymbolSpacing = 2;
@@ -31,35 +29,39 @@ constexpr float MinTemperature = 0.0;
 constexpr float MaxTemperature = 60.0;
 
 constexpr Features DefaultFeatures = {
-        .Mode = {
-            .Auto = true,
-            .Heat = true,
-            .Fan = true,
-            .Dry = true,
-            .Cool = true,
-        },
+    .Mode = {
+        .Auto = true,
+        .Heat = true,
+        .Fan = true,
+        .Dry = true,
+        .Cool = true,
+    },
 
-        .FanSpeed = {
-            .Quiet = false,
-            .Low = true,
-            .Medium = true,
-            .High = true,
-            .Auto = true,
-        },
+    .FanSpeed = {
+        .Quiet = false,
+        .Low = true,
+        .Medium = true,
+        .High = true,
+        .Auto = true,
+    },
 
-        .FilterTimer = false,
-        .SensorSwitching = false,
-        .Maintenance = false,
-        .EconomyMode = true,
-        .HorizontalLouvers = false,
-        .VerticalLouvers = false,
+    .FilterTimer = false,
+    .SensorSwitching = false,
+    .Maintenance = false,
+    .EconomyMode = true,
+    .HorizontalLouvers = false,
+    .VerticalLouvers = false,
+    .Zones = false,
 };
 
 enum class InitializationStageEnum : uint8_t {
     DetectFeatureSupport,
-    FeatureRequest,
+    FeatureRequestTx,
+    FeatureRequestRx,
+    ZoneRequestEnabled,
     FindNextControllerTx,
     FindNextControllerRx,
+    ZoneRequestActive,
     Complete
 };
 
@@ -81,36 +83,70 @@ namespace SettableFields {
     };
 };
 
+namespace ZoneSettableFields {
+    enum {
+        Zone1Active,
+        Zone2Active,
+        Zone3Active,
+        Zone4Active,
+        Zone5Active,
+        Zone6Active,
+        Zone7Active,
+        Zone8Active,
+        ZoneGroupDayActive,
+        ZoneGroupNightActive,
+        MAX
+    };
+};
+
 class Controller {
     using ConfigCallback = std::function<void(const Config&)>;
     using ErrorCallback  = std::function<void(const Packet&)>;
     using FunctionCallback = std::function<void(const Function&)>;
+    using ZoneConfigCallback = std::function<void(const ZoneConfig&)>;
     using ControllerConfigCallback = std::function<void(const uint8_t address, const Config&)>;
     using InitializationStageCallback = std::function<void(const InitializationStageEnum stage)>;
+    using AvailableBytesCallback = std::function<size_t()>;
     using ReadBytesCallback  = std::function<void(uint8_t *data, size_t len)>;
     using WriteBytesCallback = std::function<void(const uint8_t *data, size_t len)>;
 
     struct Callbacks {
         ConfigCallback Config;
         ErrorCallback Error;
+        ZoneConfigCallback ZoneConfig;
         FunctionCallback Function;
         ControllerConfigCallback ControllerConfig;
         InitializationStageCallback InitializationStage;
+        AvailableBytesCallback AvailableBytes;
         ReadBytesCallback ReadBytes;
         WriteBytesCallback WriteBytes;
     };
 
     public:
-        Controller(uint8_t uart_num, uint8_t controller_address, const Callbacks& callbacks, QueueHandle_t uart_event_queue = nullptr)
-            : uart_num(static_cast<uart_port_t>(uart_num)), controller_address(controller_address), uart_event_queue(uart_event_queue), callbacks(callbacks) {
+        Controller(uint8_t controller_address, const Callbacks& callbacks)
+            : controller_address(controller_address), callbacks(callbacks) {
             this->set_initialization_stage(InitializationStageEnum::DetectFeatureSupport);
         }
 
-        bool start();
+        void process_uart_data();
         bool is_initialized() const { return this->initialization_stage == InitializationStageEnum::Complete; }
         void reinitialize() { this->set_initialization_stage(InitializationStageEnum::DetectFeatureSupport); }
         InitializationStageEnum get_initialization_stage() const { return this->initialization_stage; }
         const struct Features& get_features() const { return this->features; }
+        const struct ZoneFunction::Zones& get_zones() const { return this->zones; }
+
+        // Override the in-code DefaultFeatures with a user-supplied Features struct.
+        // Used both as the initial fallback while probing and as the value applied
+        // when feature negotiation is skipped or unsupported.
+        // Must be called before the controller starts processing packets to take effect
+        // for the first IU Config received.
+        void set_features(const Features& features) { this->features = features; }
+
+        // Controls whether the controller probes the IU with a FeatureRequest packet.
+        // When false, the controller skips the FeatureRequest stage on the first IU
+        // Config and applies the configured features directly. Useful for IUs known
+        // to misbehave on FeatureRequest (e.g. enter a non-recoverable error state).
+        void set_autoconf(bool autoconf) { this->autoconf = autoconf; }
 
         void set_current_temperature(float temperature);
         bool set_enabled(bool enabled, bool ignore_lock = false);
@@ -127,6 +163,10 @@ class Controller {
         bool reset_filter(bool ignore_lock = false);
         bool maintenance(bool ignore_lock = false);
 
+        bool set_zone(uint8_t zone, bool active, bool ignore_lock = false);
+        bool set_zone_group_day(bool active, bool ignore_lock = false);
+        bool set_zone_group_night(bool active, bool ignore_lock = false);
+
         void get_function(uint8_t function, uint8_t unit) { this->function_queue.push({ .Function = function, .Unit = unit }); }
         void set_function(uint8_t function, uint8_t value, uint8_t unit) { this->function_queue.push({ true, function, value, unit }); }
 
@@ -139,19 +179,24 @@ class Controller {
         void process_packet(const Packet::Buffer& buffer, bool lastPacketOnWire = true);
 
     private:
-        uart_port_t uart_num;
         uint8_t controller_address;
-        QueueHandle_t uart_event_queue;
         Callbacks callbacks;
 
-        struct Features features = {};
+        bool autoconf = true;
+        struct Features features = DefaultFeatures;
         struct Config current_configuration = {};
         struct Config changed_configuration = {};
+        struct ZoneConfig current_zone_configuration = {};
+        struct ZoneConfig changed_zone_configuration = {};
+        struct ZoneFunction::Zones zones = {};
+
         std::bitset<SettableFields::MAX> configuration_changes;
+        std::bitset<ZoneSettableFields::MAX> zone_configuration_changes;
+
         std::queue<struct Function> function_queue;
         bool last_error_flag = false; // TODO handle errors for multiple indoor units...multiple errors per IU?
 
-        [[noreturn]] void uart_event_task();
+        size_t uart_available_bytes();
         void uart_read_bytes(uint8_t *buf, size_t length);
         void uart_write_bytes(const uint8_t *buf, size_t length);
 };
